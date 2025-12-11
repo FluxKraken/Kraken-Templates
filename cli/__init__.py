@@ -14,6 +14,10 @@ from jinja2.visitor import NodeVisitor
 import tomllib
 from tomlkit import aot, comment, document, dumps, table
 
+import os
+
+EDITOR = os.environ.get("KT_EDITOR")
+
 APP_NAME = "kt"
 DB_FILENAME = "templates.duckdb"
 COMMAND_PATTERN = re.compile(r"\{>(.+?)<\}", re.DOTALL)
@@ -272,7 +276,7 @@ def add(name: str, file_path: Path | None) -> None:
         if file_path is not None:
             content = _read_template_from_file(file_path)
         else:
-            content = click.edit("", extension=".j2", editor="nvim")
+            content = click.edit("", extension=".j2", editor=EDITOR)
             if content is None:
                 raise click.ClickException("Editor closed without saving content.")
 
@@ -291,7 +295,7 @@ def edit(name: str) -> None:
     """Edit an existing template."""
     with closing(_ensure_connection()) as conn:
         template = _fetch_template(conn, name)
-        updated = click.edit(template["content"], extension=".j2", editor="nvim")
+        updated = click.edit(template["content"], extension=".j2", editor=EDITOR)
         if updated is None:
             raise click.ClickException("Editor closed without saving changes.")
         if updated == template["content"]:
@@ -336,7 +340,7 @@ def render(name: str, output: Path | None) -> None:
         template = _fetch_template(conn, name)
 
     toml_seed = _build_toml_template(template["content"]) or "# No variables detected\n"
-    context_source = click.edit(toml_seed, extension=".toml", editor="nvim")
+    context_source = click.edit(toml_seed, extension=".toml", editor=EDITOR)
     if context_source is None:
         raise click.ClickException("Editor closed without saving variables.")
 
