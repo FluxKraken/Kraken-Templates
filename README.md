@@ -24,6 +24,8 @@ The environment variable KT_EDITOR is checked for the preferred editor.  If not 
 
 ## Command Syntax
 
+- ***WARNING:*** This feature is not secure.  Never run a template from an untrusted source without inspecting it first!!!
+
 The Jinja2 syntax has been extended to allow a shell command to be executed.  In this case the output of the command is substituted for the placeholder.
 
 ### Example:
