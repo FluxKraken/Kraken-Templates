@@ -99,3 +99,7 @@ Hello John
 - Orange: A orange fruit.
 - Banana: A yellow fruit.
 ```
+
+### No Variable Template
+
+In the event that a template contains no variables requiring user input, the editor will be empty.  Just save and quit anyway, and the template will render.
