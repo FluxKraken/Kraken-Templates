@@ -4,11 +4,11 @@ A very simple templating tool using Jinja2 Syntax.
 
 ## Usage
 
-Add template - `kt add [name]`
-Edit template - `kt edit [name]`
-Delete template - `kt delete [name]`
-Render Template - `kt render [name] [--output path]`
-List Templates - `kt list`
+- Add template - `kt add [name]`  
+- Edit template - `kt edit [name]`  
+- Delete template - `kt delete [name]`  
+- Render Template - `kt render [name] [--output path]`  
+- List Templates - `kt list`
 
 ## Command Syntax
 
