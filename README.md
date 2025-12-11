@@ -30,6 +30,12 @@ BETTER_AUTH_SECRET='{>openssl rand -base64 32<}`
 
 This will run the command `openssl rand -base64 32` and replace the placeholder `{>openssl rand -base64 32<}` with the output of the command.
 
+The resulting output will be:
+
+```env
+BETTER_AUTH_SECRET='CWeNHmEvYd/j77qDafzqYpEQ/cpelr7jODOAINEBIvs=`
+```
+
 You can also use standard Jinja2 syntax:
 
 Examples:
