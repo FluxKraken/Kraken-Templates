@@ -39,7 +39,7 @@ This will run the command `openssl rand -base64 32` and replace the placeholder 
 The resulting output will be:
 
 ```env
-BETTER_AUTH_SECRET='CWeNHmEvYd/j77qDafzqYpEQ/cpelr7jODOAINEBIvs=`
+BETTER_AUTH_SECRET='CWeNHmEvYd/j77qDafzqYpEQ/cpelr7jODOAINEBIvs='
 ```
 
 You can also use standard Jinja2 syntax:
