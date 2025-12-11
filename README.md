@@ -18,6 +18,10 @@ Install with the UV package manager:
 uv tool install https://github.com/FluxKraken/Kraken-Templates.git
 ```
 
+### Default Editor
+
+The environment variable KT_EDITOR is checked for the preferred editor.  If not set, the system defaults to $EDITOR.
+
 ## Command Syntax
 
 The Jinja2 syntax has been extended to allow a shell command to be executed.  In this case the output of the command is substituted for the placeholder.
