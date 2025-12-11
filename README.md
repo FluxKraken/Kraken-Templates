@@ -31,7 +31,7 @@ The Jinja2 syntax has been extended to allow a shell command to be executed.  In
 ### Example:
 
 ```j2
-BETTER_AUTH_SECRET='{>openssl rand -base64 32<}`
+BETTER_AUTH_SECRET='{>openssl rand -base64 32<}'
 ```
 
 This will run the command `openssl rand -base64 32` and replace the placeholder `{>openssl rand -base64 32<}` with the output of the command.
