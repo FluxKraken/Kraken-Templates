@@ -1,0 +1,31 @@
+[project]
+name = "kt"
+version = "0.1.0"
+description = "Kraken Template System"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "python-dotenv",
+    "python-dateutil",
+    "click",
+    "click_aliases",
+    "textual[syntax]",
+    "textual-dev",
+    "jinja2",
+    "markdown",
+    "tomlkit",
+    "sqlmodel",
+    "duckdb",
+    "duckdb-engine"
+]
+
+[project.scripts]
+kt = "cli:kt"
+
+[build-system]
+requires = ["uv_build"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "cli"
+module-root = ""
