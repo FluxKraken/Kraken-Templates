@@ -10,6 +10,14 @@ A very simple templating tool using Jinja2 Syntax.
 - Render Template - `kt render [name] [--output path]`  
 - List Templates - `kt list`
 
+## Installation
+
+Install with the UV package manager:
+
+```bash
+uv tool install https://github.com/FluxKraken/Kraken-Templates.git
+```
+
 ## Command Syntax
 
 The Jinja2 syntax has been extended to allow a shell command to be executed.  In this case the output of the command is substituted for the placeholder.
