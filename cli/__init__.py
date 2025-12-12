@@ -383,6 +383,41 @@ def _resolve_context_values(value: Any, variables: dict[str, str]) -> Any:
     return value
 
 
+def _expand_dotted_context_keys(data: dict[str, Any]) -> dict[str, Any]:
+    """Convert dictionaries that use dotted keys into nested mappings."""
+
+    expanded: dict[str, Any] = {}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            value = _expand_dotted_context_keys(value)
+
+        parts = key.split(".")
+        target: MutableMapping[str, Any] = expanded
+        for part in parts[:-1]:
+            existing = target.get(part)
+            if existing is None:
+                existing = {}
+                target[part] = existing
+            elif not isinstance(existing, MutableMapping):
+                raise click.ClickException(
+                    f"Context key '{key}' conflicts with previously defined scalar '{part}'."
+                )
+            target = existing
+
+        leaf = parts[-1]
+        existing = target.get(leaf)
+        if isinstance(existing, MutableMapping) and not isinstance(value, MutableMapping):
+            raise click.ClickException(
+                f"Context key '{key}' cannot override nested values under '{leaf}'."
+            )
+        if isinstance(existing, MutableMapping) and isinstance(value, MutableMapping):
+            existing.update(value)
+        else:
+            target[leaf] = value
+
+    return expanded
+
+
 def _load_recipe_actions(content: str) -> list[dict[str, Any]]:
     try:
         parsed = tomllib.loads(content)
@@ -448,7 +483,7 @@ def _run_template_action(
             )
         resolved = _resolve_context_values(context_override, variables)
         if isinstance(resolved, dict):
-            preset_context = resolved
+            preset_context = _expand_dotted_context_keys(resolved)
         else:
             raise click.ClickException(
                 f"Template action #{index} context must resolve to a table."
