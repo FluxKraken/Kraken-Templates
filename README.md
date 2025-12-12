@@ -133,11 +133,11 @@ Recipes let you describe a sequence of template renders, shell commands, and int
 
 ### Actions
 
-- `template` – render a stored template, optionally writing the result to an `output` path.  The familiar TOML editor still opens, but providing a `context` table pre-fills its values (reusing prompt answers via `$(var)` where needed) so you only have to tweak what’s missing.  Add an optional `comment = "Fill in the project title"` to show extra guidance under the TOML header while editing.
+- `template` – render a stored template, optionally writing the result to an `output` path.  The familiar TOML editor still opens, but providing a `context` table pre-fills its values (reusing prompt answers via `$(var)` where needed) so you only have to tweak what’s missing.  Add an optional `comment = "Fill in the project title"` to show extra guidance under the TOML header while editing.  Include `verify = false` when you want to trust the provided context and skip launching the editor entirely.
 - `command` – run shell commands.  Provide either a string (executed through the shell), a list of strings (executed without a shell), or a list containing multiple command definitions to run sequentially.  Values like `$(var_name)` are replaced by previously captured prompt variables before execution, and every variable is also exported to the child process environment.
 - `prompt` – ask the user for input and stash it under `var`.  The stored value can be re-used by later actions with the `$(var)` syntax.
 - `recipe` – run another stored recipe inline without spawning a new `kt` process (avoiding DuckDB locks).  The nested recipe shares the current variable context and accepts `$(var)` interpolation in its `name`.
-- `gate` – optionally include a `gate = "Question?"` string on any action to ask whether it should run.  Answer `y` to proceed or `n` to skip that action.
+- `gate` – optionally include a `gate = "Question?"` string on any action to ask whether it should run.  Answer `y` to proceed or `n` to skip that action.  Add `store_gate = "var_name"` to stash the answer for later reuse, and include `check_gate = "var_name"` on future actions to automatically skip them when the stored gate returned `n`.
 
 ### Example recipe
 
@@ -170,6 +170,7 @@ command = "echo 'Generated database env'"
 [[actions]]
 type = "command"
 gate = "Create Git repository?"
+store_gate = "create_git"
 command = [
   ["git", "init"],
   ["git", "add", "."],
@@ -177,9 +178,28 @@ command = [
 ]
 
 [[actions]]
+type = "template"
+check_gate = "create_git"
+name = "svelte-gitignore"
+output = ".gitignore"
+
+[[actions]]
 type = "recipe"
 gate = "Run shared post-steps?"
 name = "post-setup"
 ```
 
-When the template action sees a `context` table it preloads those values in the editor so you can review or extend them before rendering.  Any string value that matches a previously prompted variable is resolved automatically, and you can also embed `$(var)` anywhere in the string to interpolate values inline.  Save this recipe with `kt recipe add db-env` and run it via `kt recipe render db-env` to generate the `.env` file end-to-end; create a separate `post-setup` recipe if you want the gated nested step to run.
+When the template action sees a `context` table it preloads those values in the editor so you can review or extend them before rendering.  Any string value that matches a previously prompted variable is resolved automatically, and you can also embed `$(var)` anywhere in the string to interpolate values inline.  Save this recipe with `kt recipe add db-env` and run it via `kt recipe render db-env` to generate the `.env` file end-to-end; create a separate `post-setup` recipe if you want the gated nested step to run.  Stored gates behave like any other variable (`$(create_git)` will substitute `true`/`false`), and recipes skip `check_gate` actions automatically when the referenced gate was answered with `n`.
+
+Templates that contain no variables can be rendered in bulk without prompting:
+
+```toml
+[[actions]]
+type = "template"
+bulk = [
+  { name = ".gitignore", output = ".gitignore", overwrite = true },
+  { name = "readme", output = "README.md", overwrite = true }
+]
+```
+
+Each `bulk` entry must reference a template without prompt variables.  Existing files are left untouched unless `overwrite = true` is set for that entry.

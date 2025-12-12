@@ -489,10 +489,58 @@ def _load_recipe_actions(content: str) -> list[dict[str, Any]]:
     return normalized
 
 
+def _coerce_gate_variable(
+    value: Any, gate_name: str, index: int, field_name: str
+) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "t", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "f", "no", "n", "off"}:
+            return False
+    raise click.ClickException(
+        f"Action #{index} {field_name} expected boolean-compatible value for gate '{gate_name}', "
+        "but it resolved to an unsupported value."
+    )
+
+
 def _should_run_action(
     action: dict[str, Any], variables: dict[str, str], index: int
 ) -> bool:
+    check_gate_name = action.get("check_gate")
+    if check_gate_name is not None:
+        if not isinstance(check_gate_name, str) or not check_gate_name:
+            raise click.ClickException(
+                f"Action #{index} check_gate must be a non-empty string when provided."
+            )
+        if check_gate_name not in variables:
+            raise click.ClickException(
+                f"Action #{index} check_gate references unknown gate '{check_gate_name}'."
+            )
+        check_passed = _coerce_gate_variable(
+            variables[check_gate_name],
+            gate_name=check_gate_name,
+            index=index,
+            field_name="check_gate",
+        )
+        if not check_passed:
+            click.echo(f"[{index}] Skipping action gated by '{check_gate_name}'.")
+            return False
+
     gate_value = action.get("gate")
+    store_gate_name = action.get("store_gate")
+    if store_gate_name is not None:
+        if not isinstance(store_gate_name, str) or not store_gate_name:
+            raise click.ClickException(
+                f"Action #{index} store_gate must be a non-empty string when provided."
+            )
+        if action.get("gate") is None:
+            raise click.ClickException(
+                f"Action #{index} cannot set store_gate without also defining a gate question."
+            )
+
     if gate_value is None:
         return True
     if not isinstance(gate_value, str) or not gate_value:
@@ -503,6 +551,11 @@ def _should_run_action(
     confirmed = click.confirm(
         f"[{index}] {prompt_text}", default=True, show_default=True
     )
+    if store_gate_name is not None:
+        variables[store_gate_name] = "true" if confirmed else "false"
+        click.echo(
+            f"[{index}] Stored gate '{store_gate_name}' = {'yes' if confirmed else 'no'}."
+        )
     if not confirmed:
         click.echo(f"[{index}] Skipping action.")
     return confirmed
@@ -536,6 +589,74 @@ def _execute_recipe_actions(
             )
 
 
+def _run_bulk_template_entries(
+    conn: duckdb.DuckDBPyConnection,
+    entries: Any,
+    variables: dict[str, str],
+    index: int,
+) -> None:
+    if not isinstance(entries, list) or not entries:
+        raise click.ClickException(
+            f"Template action #{index} bulk must be a non-empty array of tables."
+        )
+
+    for entry_index, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            raise click.ClickException(
+                f"Template action #{index} bulk entry #{entry_index} must be a table."
+            )
+
+        template_name = entry.get("name")
+        output_value = entry.get("output")
+        overwrite_value = entry.get("overwrite")
+
+        if not isinstance(template_name, str) or not template_name:
+            raise click.ClickException(
+                f"Template action #{index} bulk entry #{entry_index} must include a non-empty 'name'."
+            )
+        if not isinstance(output_value, str) or not output_value:
+            raise click.ClickException(
+                f"Template action #{index} bulk entry #{entry_index} must include a non-empty 'output'."
+            )
+        if overwrite_value is None:
+            overwrite = False
+        elif isinstance(overwrite_value, bool):
+            overwrite = overwrite_value
+        else:
+            raise click.ClickException(
+                f"Template action #{index} bulk entry #{entry_index} expected 'overwrite' to be a boolean when provided."
+            )
+
+        template = _fetch_template(conn, template_name)
+        _, has_promptable = _build_toml_template(template["content"])
+        if has_promptable:
+            raise click.ClickException(
+                f"Template action #{index} bulk entry '{template_name}' cannot be rendered without prompting because it defines variables."
+            )
+
+        rendered = _render_template_content(template["content"], {})
+        resolved_output = _substitute_variables(output_value, variables)
+        output_path = Path(resolved_output).expanduser()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if output_path.exists() and not overwrite:
+            click.echo(
+                f"[{index}] Skipping template '{template_name}' because '{output_path}' already exists (bulk entry #{entry_index})."
+            )
+            continue
+
+        try:
+            output_path.write_text(rendered)
+        except OSError as exc:
+            raise click.ClickException(
+                f"Failed to write template output to '{output_path}': {exc}"
+            ) from exc
+
+        click.echo(
+            f"[{index}] Saved bulk template '{template_name}' to '{output_path}'."
+        )
+
+
 def _run_template_action(
     conn: duckdb.DuckDBPyConnection,
     action: dict[str, Any],
@@ -549,6 +670,15 @@ def _run_template_action(
                 f"Template action #{index} must set 'comment' as a non-empty string when provided."
             )
         action_comment = _substitute_variables(action_comment.strip(), variables)
+    bulk_entries = action.get("bulk")
+    if bulk_entries is not None:
+        if any(key in action for key in {"name", "context", "output"}):
+            raise click.ClickException(
+                f"Template action #{index} cannot combine 'bulk' with 'name', 'context', or 'output'."
+            )
+        _run_bulk_template_entries(conn, bulk_entries, variables, index)
+        return
+
     template_name = action.get("name")
     if not isinstance(template_name, str) or not template_name:
         raise click.ClickException(
@@ -571,9 +701,22 @@ def _run_template_action(
             raise click.ClickException(
                 f"Template action #{index} context must resolve to a table."
             )
-    context_data = _prompt_context_for_template(
-        template["content"], preset_context, action_comment
-    )
+    verify_flag = action.get("verify", True)
+    if not isinstance(verify_flag, bool):
+        raise click.ClickException(
+            f"Template action #{index} expected 'verify' to be either true or false when provided."
+        )
+
+    if not verify_flag:
+        if preset_context is None:
+            raise click.ClickException(
+                f"Template action #{index} cannot disable verification without a preset context."
+            )
+        context_data = preset_context
+    else:
+        context_data = _prompt_context_for_template(
+            template["content"], preset_context, action_comment
+        )
     rendered = _render_template_content(template["content"], context_data)
 
     output_value = action.get("output")
