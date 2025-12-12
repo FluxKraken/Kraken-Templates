@@ -3,8 +3,10 @@ from __future__ import annotations
 from collections import defaultdict
 from contextlib import closing
 from pathlib import Path
+import os
 import re
 import subprocess
+from typing import Any
 
 import click
 import duckdb
@@ -14,13 +16,12 @@ from jinja2.visitor import NodeVisitor
 import tomllib
 from tomlkit import aot, comment, document, dumps, table
 
-import os
-
 EDITOR = os.environ.get("KT_EDITOR")
 
 APP_NAME = "kt"
 DB_FILENAME = "templates.duckdb"
 COMMAND_PATTERN = re.compile(r"\{>(.+?)<\}", re.DOTALL)
+VARIABLE_PATTERN = re.compile(r"\$\((?P<name>[A-Za-z_][A-Za-z0-9_]*)\)")
 
 CREATE_TEMPLATES_SQL = """
 CREATE TABLE IF NOT EXISTS templates (
@@ -30,12 +31,38 @@ CREATE TABLE IF NOT EXISTS templates (
 )
 """
 
+CREATE_RECIPES_SQL = """
+CREATE TABLE IF NOT EXISTS recipes (
+    name TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
+
+def _default_recipe_content() -> str:
+    return (
+        "# Define the ordered actions for the recipe\n"
+        "[[actions]]\n"
+        "type = \"template\"\n"
+        "name = \"example-template\"\n"
+        "output = \"output.txt\"\n\n"
+        "[[actions]]\n"
+        "type = \"command\"\n"
+        "command = [\"echo\", \"Hello from Kraken Templates\"]\n\n"
+        "[[actions]]\n"
+        "type = \"prompt\"\n"
+        "var = \"name\"\n"
+        "prompt = \"What is your name?\"\n"
+    )
+
 
 def _ensure_connection():
     db_path = Path(click.get_app_dir(APP_NAME))
     db_path.mkdir(parents=True, exist_ok=True)
     connection = duckdb.connect(str(db_path / DB_FILENAME))
     connection.execute(CREATE_TEMPLATES_SQL)
+    connection.execute(CREATE_RECIPES_SQL)
     return connection
 
 
@@ -55,6 +82,26 @@ def _template_exists(conn: duckdb.DuckDBPyConnection, name: str) -> bool:
 
 def _list_template_names(conn: duckdb.DuckDBPyConnection) -> list[str]:
     rows = conn.execute("SELECT name FROM templates ORDER BY name").fetchall()
+    return [row[0] for row in rows]
+
+
+def _fetch_recipe(conn: duckdb.DuckDBPyConnection, name: str) -> dict[str, str]:
+    row = conn.execute(
+        "SELECT name, content FROM recipes WHERE name = ?",
+        [name],
+    ).fetchone()
+    if row is None:
+        raise click.ClickException(f"Recipe '{name}' does not exist.")
+    return {"name": row[0], "content": row[1]}
+
+
+def _recipe_exists(conn: duckdb.DuckDBPyConnection, name: str) -> bool:
+    result = conn.execute("SELECT 1 FROM recipes WHERE name = ?", [name]).fetchone()
+    return result is not None
+
+
+def _list_recipe_names(conn: duckdb.DuckDBPyConnection) -> list[str]:
+    rows = conn.execute("SELECT name FROM recipes ORDER BY name").fetchall()
     return [row[0] for row in rows]
 
 
@@ -241,6 +288,196 @@ def _substitute_command_blocks(content: str) -> str:
     return COMMAND_PATTERN.sub(_run, content)
 
 
+def _prompt_context_for_template(template_content: str) -> dict[str, Any]:
+    toml_seed = _build_toml_template(template_content) or "# No variables detected\n"
+    context_source = click.edit(toml_seed, extension=".toml", editor=EDITOR)
+    if context_source is None:
+        raise click.ClickException("Editor closed without saving variables.")
+
+    try:
+        return tomllib.loads(context_source)
+    except tomllib.TOMLDecodeError as exc:
+        raise click.ClickException(f"Invalid TOML: {exc}") from exc
+
+
+def _render_template_content(template_content: str, context_data: dict[str, Any]) -> str:
+    env = Environment(undefined=StrictUndefined)
+    try:
+        rendered = env.from_string(template_content).render(**context_data)
+    except TemplateError as exc:
+        raise click.ClickException(f"Failed to render template: {exc}") from exc
+
+    return _substitute_command_blocks(rendered)
+
+
+def _substitute_variables(text: str, variables: dict[str, str]) -> str:
+    def _replace(match: re.Match[str]) -> str:
+        name = match.group("name")
+        if name not in variables:
+            raise click.ClickException(
+                f"Unknown variable '{name}' referenced in recipe action."
+            )
+        return str(variables[name])
+
+    return VARIABLE_PATTERN.sub(_replace, text)
+
+
+def _coerce_command_value(value: Any) -> list[str] | str:
+    if isinstance(value, str):
+        return value
+    if (
+        isinstance(value, list)
+        and value
+        and all(isinstance(item, str) for item in value)
+    ):
+        return value
+    raise click.ClickException(
+        "Command actions must provide 'command' as a string or list of strings."
+    )
+
+
+def _load_recipe_actions(content: str) -> list[dict[str, Any]]:
+    try:
+        parsed = tomllib.loads(content)
+    except tomllib.TOMLDecodeError as exc:
+        raise click.ClickException(f"Invalid recipe TOML: {exc}") from exc
+
+    actions = parsed.get("actions")
+    if not isinstance(actions, list) or not actions:
+        raise click.ClickException(
+            "Recipe must define at least one [[actions]] entry."
+        )
+
+    normalized: list[dict[str, Any]] = []
+    for index, action in enumerate(actions, start=1):
+        if not isinstance(action, dict):
+            raise click.ClickException(f"Action #{index} must be a TOML table.")
+        action_type = action.get("type")
+        if not isinstance(action_type, str) or not action_type:
+            raise click.ClickException(f"Action #{index} is missing a 'type'.")
+        normalized.append(action)
+
+    return normalized
+
+
+def _execute_recipe_actions(
+    conn: duckdb.DuckDBPyConnection, actions: list[dict[str, Any]]
+) -> None:
+    variables: dict[str, str] = {}
+    for index, action in enumerate(actions, start=1):
+        action_type = action.get("type")
+        if action_type == "template":
+            _run_template_action(conn, action, variables, index)
+        elif action_type == "command":
+            _run_command_action(action, variables, index)
+        elif action_type == "prompt":
+            _run_prompt_action(action, variables, index)
+        else:
+            raise click.ClickException(
+                f"Unsupported action type '{action_type}' at position {index}."
+            )
+
+
+def _run_template_action(
+    conn: duckdb.DuckDBPyConnection,
+    action: dict[str, Any],
+    variables: dict[str, str],
+    index: int,
+) -> None:
+    template_name = action.get("name")
+    if not isinstance(template_name, str) or not template_name:
+        raise click.ClickException(
+            f"Template action #{index} must include a non-empty 'name'."
+        )
+
+    template = _fetch_template(conn, template_name)
+    click.echo(f"[{index}] Rendering template '{template_name}'.")
+    context_data = _prompt_context_for_template(template["content"])
+    rendered = _render_template_content(template["content"], context_data)
+
+    output_value = action.get("output")
+    if output_value is None:
+        click.echo(rendered)
+        return
+
+    if not isinstance(output_value, str) or not output_value:
+        raise click.ClickException(
+            f"Template action #{index} must supply 'output' as a non-empty string."
+        )
+
+    resolved_path = _substitute_variables(output_value, variables)
+    output_path = Path(resolved_path).expanduser()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        output_path.write_text(rendered)
+    except OSError as exc:
+        raise click.ClickException(
+            f"Failed to write template output to '{output_path}': {exc}"
+        ) from exc
+
+    click.echo(f"[{index}] Saved output to '{output_path}'.")
+
+
+def _run_command_action(action: dict[str, Any], variables: dict[str, str], index: int) -> None:
+    if "command" not in action:
+        raise click.ClickException(
+            f"Command action #{index} must define a 'command' field."
+        )
+
+    command_value = _coerce_command_value(action["command"])
+    env = os.environ.copy()
+    env.update({key: str(value) for key, value in variables.items()})
+
+    try:
+        if isinstance(command_value, str):
+            command_text = _substitute_variables(command_value, variables)
+            completed = subprocess.run(
+                command_text,
+                shell=True,
+                check=False,
+                env=env,
+            )
+        else:
+            args = [_substitute_variables(arg, variables) for arg in command_value]
+            completed = subprocess.run(args, check=False, env=env)
+    except OSError as exc:
+        raise click.ClickException(
+            f"Failed to run command action #{index}: {exc}"
+        ) from exc
+
+    if completed.returncode != 0:
+        raise click.ClickException(
+            f"Command action #{index} exited with code {completed.returncode}."
+        )
+
+    click.echo(f"[{index}] Command completed successfully.")
+
+
+def _run_prompt_action(
+    action: dict[str, Any], variables: dict[str, str], index: int
+) -> None:
+    prompt_text = action.get("prompt")
+    var_name = action.get("var")
+    if not isinstance(prompt_text, str) or not prompt_text:
+        raise click.ClickException(
+            f"Prompt action #{index} must include a non-empty 'prompt'."
+        )
+    if not isinstance(var_name, str) or not var_name:
+        raise click.ClickException(
+            f"Prompt action #{index} must include a non-empty 'var'."
+        )
+
+    default_value = action.get("default")
+    kwargs: dict[str, Any] = {}
+    if default_value is not None:
+        kwargs["default"] = str(default_value)
+        kwargs["show_default"] = True
+
+    value = click.prompt(prompt_text, **kwargs)
+    variables[var_name] = value
+    click.echo(f"[{index}] Stored variable '{var_name}'.")
+
+
 @click.group()
 def kt() -> None:
     """Kraken Template CLI."""
@@ -339,24 +576,8 @@ def render(name: str, output: Path | None) -> None:
     with closing(_ensure_connection()) as conn:
         template = _fetch_template(conn, name)
 
-    toml_seed = _build_toml_template(template["content"]) or "# No variables detected\n"
-    context_source = click.edit(toml_seed, extension=".toml", editor=EDITOR)
-    if context_source is None:
-        raise click.ClickException("Editor closed without saving variables.")
-
-    try:
-        context_data = tomllib.loads(context_source)
-    except tomllib.TOMLDecodeError as exc:
-        raise click.ClickException(f"Invalid TOML: {exc}") from exc
-
-    env = Environment(undefined=StrictUndefined)
-    rendered = ""
-    try:
-        rendered = env.from_string(template["content"]).render(**context_data)
-    except TemplateError as exc:
-        raise click.ClickException(f"Failed to render template: {exc}") from exc
-
-    rendered = _substitute_command_blocks(rendered)
+    context_data = _prompt_context_for_template(template["content"])
+    rendered = _render_template_content(template["content"], context_data)
 
     if output is not None:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -367,3 +588,100 @@ def render(name: str, output: Path | None) -> None:
         click.echo(f"Rendered template saved to '{output}'.")
     else:
         click.echo(rendered)
+
+
+@kt.group()
+def recipe() -> None:
+    """Manage stored recipes."""
+
+
+@recipe.command(name="list")
+def list_recipes() -> None:
+    with closing(_ensure_connection()) as conn:
+        names = _list_recipe_names(conn)
+
+    if not names:
+        click.echo("No recipes stored yet.")
+        return
+
+    for name in names:
+        click.echo(f"- {name}")
+
+
+@recipe.command(name="add")
+@click.argument("name")
+@click.option(
+    "-f",
+    "--file",
+    "file_path",
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    help="Seed the recipe definition from a file.",
+)
+def add_recipe(name: str, file_path: Path | None) -> None:
+    with closing(_ensure_connection()) as conn:
+        if _recipe_exists(conn, name):
+            raise click.ClickException(f"Recipe '{name}' already exists.")
+
+        if file_path is not None:
+            content = _read_template_from_file(file_path)
+        else:
+            content = click.edit(
+                _default_recipe_content(), extension=".toml", editor=EDITOR
+            )
+            if content is None:
+                raise click.ClickException("Editor closed without saving content.")
+
+        if not content.strip():
+            raise click.ClickException("Recipe content cannot be empty.")
+
+        conn.execute(
+            "INSERT INTO recipes (name, content) VALUES (?, ?)",
+            [name, content],
+        )
+
+    click.echo(f"Recipe '{name}' created.")
+
+
+@recipe.command(name="edit")
+@click.argument("name")
+def edit_recipe(name: str) -> None:
+    with closing(_ensure_connection()) as conn:
+        recipe_data = _fetch_recipe(conn, name)
+        updated = click.edit(recipe_data["content"], extension=".toml", editor=EDITOR)
+        if updated is None:
+            raise click.ClickException("Editor closed without saving changes.")
+        if updated == recipe_data["content"]:
+            click.echo("No changes detected; recipe left untouched.")
+            return
+        conn.execute(
+            "UPDATE recipes SET content = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ?",
+            [updated, name],
+        )
+
+    click.echo(f"Recipe '{name}' updated.")
+
+
+@recipe.command(name="delete")
+@click.argument("name")
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
+def delete_recipe(name: str, yes: bool) -> None:
+    with closing(_ensure_connection()) as conn:
+        if not _recipe_exists(conn, name):
+            raise click.ClickException(f"Recipe '{name}' does not exist.")
+
+    if not yes:
+        click.confirm(f"Delete recipe '{name}'?", abort=True)
+
+    with closing(_ensure_connection()) as conn:
+        conn.execute("DELETE FROM recipes WHERE name = ?", [name])
+
+    click.echo(f"Recipe '{name}' deleted.")
+
+
+@recipe.command(name="render")
+@click.argument("name")
+def render_recipe(name: str) -> None:
+    with closing(_ensure_connection()) as conn:
+        recipe_data = _fetch_recipe(conn, name)
+        actions = _load_recipe_actions(recipe_data["content"])
+        _execute_recipe_actions(conn, actions)
