@@ -119,7 +119,7 @@ Hello John
 
 ### No Variable Template
 
-In the event that a template contains no variables requiring user input, the CLI skips the editor entirely and renders the template immediately.
+In the event that a template contains no variables requiring user input, `kt render` (as well as template actions in recipes) skips the TOML editor entirely and renders the template immediately using any preset context.
 
 ## Recipe Automation
 

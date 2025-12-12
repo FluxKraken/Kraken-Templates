@@ -206,7 +206,9 @@ class TemplateIntrospector(NodeVisitor):
         return None
 
 
-def _build_toml_template(source: str, preset: dict[str, Any] | None = None) -> str:
+def _build_toml_template(
+    source: str, preset: dict[str, Any] | None = None
+) -> tuple[str, bool]:
     env = Environment()
     parsed = env.parse(source)
 
@@ -225,8 +227,12 @@ def _build_toml_template(source: str, preset: dict[str, Any] | None = None) -> s
         else:
             scalar_vars.append(name)
 
+    has_promptable_variables = bool(
+        scalar_vars or table_vars or inspector.list_fields
+    )
     doc = document()
-    doc.add(comment("Update the values below and save to render the template."))
+    if has_promptable_variables:
+        doc.add(comment("Update the values below and save to render the template."))
 
     for var in scalar_vars:
         doc[var] = ""
@@ -250,7 +256,7 @@ def _build_toml_template(source: str, preset: dict[str, Any] | None = None) -> s
         _apply_preset_to_doc(doc, preset)
 
     rendered = dumps(doc).strip()
-    return f"{rendered}\n" if rendered else ""
+    return (f"{rendered}\n" if rendered else "", has_promptable_variables)
 
 
 def _apply_preset_to_doc(target: MutableMapping[str, Any], preset: dict[str, Any]) -> None:
@@ -323,9 +329,9 @@ def _substitute_command_blocks(content: str) -> str:
 def _prompt_context_for_template(
     template_content: str, preset: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    toml_seed = _build_toml_template(template_content, preset)
-    if not toml_seed.strip():
-        return preset or {}
+    toml_seed, has_promptable = _build_toml_template(template_content, preset)
+    if not has_promptable:
+        return dict(preset) if isinstance(preset, dict) else {}
     context_source = click.edit(toml_seed, extension=".toml", editor=EDITOR)
     if context_source is None:
         raise click.ClickException("Editor closed without saving variables.")
