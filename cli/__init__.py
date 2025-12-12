@@ -356,17 +356,35 @@ def _substitute_variables(text: str, variables: dict[str, str]) -> str:
     return VARIABLE_PATTERN.sub(_replace, text)
 
 
-def _coerce_command_value(value: Any) -> list[str] | str:
+def _coerce_command_value(value: Any) -> list[str | list[str]]:
     if isinstance(value, str):
-        return value
-    if (
-        isinstance(value, list)
-        and value
-        and all(isinstance(item, str) for item in value)
-    ):
-        return value
+        return [value]
+    if isinstance(value, list):
+        if not value:
+            raise click.ClickException(
+                "Command actions must provide a non-empty 'command' value."
+            )
+        if all(isinstance(item, str) for item in value):
+            return [value]
+        normalized: list[str | list[str]] = []
+        for item in value:
+            if isinstance(item, str):
+                normalized.append(item)
+            elif (
+                isinstance(item, list)
+                and item
+                and all(isinstance(arg, str) for arg in item)
+            ):
+                normalized.append(item)
+            else:
+                raise click.ClickException(
+                    "Command actions must provide strings, lists of strings, "
+                    "or a list combining those command definitions."
+                )
+        return normalized
     raise click.ClickException(
-        "Command actions must provide 'command' as a string or list of strings."
+        "Command actions must provide 'command' as a string, list of strings, "
+        "or list of command definitions."
     )
 
 
@@ -520,31 +538,32 @@ def _run_command_action(action: dict[str, Any], variables: dict[str, str], index
             f"Command action #{index} must define a 'command' field."
         )
 
-    command_value = _coerce_command_value(action["command"])
+    command_sequence = _coerce_command_value(action["command"])
     env = os.environ.copy()
     env.update({key: str(value) for key, value in variables.items()})
 
-    try:
-        if isinstance(command_value, str):
-            command_text = _substitute_variables(command_value, variables)
-            completed = subprocess.run(
-                command_text,
-                shell=True,
-                check=False,
-                env=env,
-            )
-        else:
-            args = [_substitute_variables(arg, variables) for arg in command_value]
-            completed = subprocess.run(args, check=False, env=env)
-    except OSError as exc:
-        raise click.ClickException(
-            f"Failed to run command action #{index}: {exc}"
-        ) from exc
+    for command_value in command_sequence:
+        try:
+            if isinstance(command_value, str):
+                command_text = _substitute_variables(command_value, variables)
+                completed = subprocess.run(
+                    command_text,
+                    shell=True,
+                    check=False,
+                    env=env,
+                )
+            else:
+                args = [_substitute_variables(arg, variables) for arg in command_value]
+                completed = subprocess.run(args, check=False, env=env)
+        except OSError as exc:
+            raise click.ClickException(
+                f"Failed to run command action #{index}: {exc}"
+            ) from exc
 
-    if completed.returncode != 0:
-        raise click.ClickException(
-            f"Command action #{index} exited with code {completed.returncode}."
-        )
+        if completed.returncode != 0:
+            raise click.ClickException(
+                f"Command action #{index} exited with code {completed.returncode}."
+            )
 
     click.echo(f"[{index}] Command completed successfully.")
 
