@@ -130,6 +130,7 @@ Recipes let you describe a sequence of template renders, shell commands, and int
 - `template` – render a stored template, optionally writing the result to an `output` path.  The familiar TOML editor still opens, but providing a `context` table pre-fills its values (reusing prompt answers via `$(var)` where needed) so you only have to tweak what’s missing.
 - `command` – run shell commands.  Provide either a string (executed through the shell), a list of strings (executed without a shell), or a list containing multiple command definitions to run sequentially.  Values like `$(var_name)` are replaced by previously captured prompt variables before execution, and every variable is also exported to the child process environment.
 - `prompt` – ask the user for input and stash it under `var`.  The stored value can be re-used by later actions with the `$(var)` syntax.
+- `recipe` – run another stored recipe inline without spawning a new `kt` process (avoiding DuckDB locks).  The nested recipe shares the current variable context and accepts `$(var)` interpolation in its `name`.
 - `gate` – optionally include a `gate = "Question?"` string on any action to ask whether it should run.  Answer `y` to proceed or `n` to skip that action.
 
 ### Example recipe
@@ -168,6 +169,11 @@ command = [
   ["git", "add", "."],
   ["git", "commit", "-m", "Initial commit"]
 ]
+
+[[actions]]
+type = "recipe"
+gate = "Run shared post-steps?"
+name = "post-setup"
 ```
 
-When the template action sees a `context` table it preloads those values in the editor so you can review or extend them before rendering.  Any string value that matches a previously prompted variable is resolved automatically, and you can also embed `$(var)` anywhere in the string to interpolate values inline.  Save this recipe with `kt recipe add db-env` and run it via `kt recipe render db-env` to generate the `.env` file end-to-end.
+When the template action sees a `context` table it preloads those values in the editor so you can review or extend them before rendering.  Any string value that matches a previously prompted variable is resolved automatically, and you can also embed `$(var)` anywhere in the string to interpolate values inline.  Save this recipe with `kt recipe add db-env` and run it via `kt recipe render db-env` to generate the `.env` file end-to-end; create a separate `post-setup` recipe if you want the gated nested step to run.

@@ -488,9 +488,15 @@ def _should_run_action(
 
 
 def _execute_recipe_actions(
-    conn: duckdb.DuckDBPyConnection, actions: list[dict[str, Any]]
+    conn: duckdb.DuckDBPyConnection,
+    actions: list[dict[str, Any]],
+    variables: dict[str, str] | None = None,
+    lineage: list[str] | None = None,
 ) -> None:
-    variables: dict[str, str] = {}
+    if variables is None:
+        variables = {}
+    if lineage is None:
+        lineage = []
     for index, action in enumerate(actions, start=1):
         if not _should_run_action(action, variables, index):
             continue
@@ -501,6 +507,8 @@ def _execute_recipe_actions(
             _run_command_action(action, variables, index)
         elif action_type == "prompt":
             _run_prompt_action(action, variables, index)
+        elif action_type == "recipe":
+            _run_recipe_action(conn, action, variables, lineage, index)
         else:
             raise click.ClickException(
                 f"Unsupported action type '{action_type}' at position {index}."
@@ -559,6 +567,33 @@ def _run_template_action(
         ) from exc
 
     click.echo(f"[{index}] Saved output to '{output_path}'.")
+
+
+def _run_recipe_action(
+    conn: duckdb.DuckDBPyConnection,
+    action: dict[str, Any],
+    variables: dict[str, str],
+    lineage: list[str],
+    index: int,
+) -> None:
+    recipe_name = action.get("name")
+    if not isinstance(recipe_name, str) or not recipe_name:
+        raise click.ClickException(
+            f"Recipe action #{index} must include a non-empty 'name'."
+        )
+
+    resolved_name = _substitute_variables(recipe_name, variables)
+    if resolved_name in lineage:
+        cycle = " -> ".join([*lineage, resolved_name])
+        raise click.ClickException(
+            f"Recipe action #{index} would create a recursion loop ({cycle})."
+        )
+
+    recipe_data = _fetch_recipe(conn, resolved_name)
+    click.echo(f"[{index}] Running recipe '{resolved_name}'.")
+    nested_actions = _load_recipe_actions(recipe_data["content"])
+    _execute_recipe_actions(conn, nested_actions, variables, [*lineage, resolved_name])
+    click.echo(f"[{index}] Completed recipe '{resolved_name}'.")
 
 
 def _run_command_action(action: dict[str, Any], variables: dict[str, str], index: int) -> None:
