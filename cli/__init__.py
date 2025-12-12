@@ -302,6 +302,14 @@ def _read_template_from_file(path: Path) -> str:
         raise click.ClickException(f"Failed to read '{path}': {exc}") from exc
 
 
+def _write_content_to_file(path: Path, content: str, kind: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.write_text(content)
+    except OSError as exc:
+        raise click.ClickException(f"Failed to write {kind} to '{path}': {exc}") from exc
+
+
 def _substitute_command_blocks(content: str) -> str:
     """Replace {>cmd<} blocks with the stdout of the shell command."""
 
@@ -764,6 +772,68 @@ def delete(name: str, yes: bool) -> None:
     click.echo(f"Template '{name}' deleted.")
 
 
+@kt.command(name="export")
+@click.argument("name")
+@click.option(
+    "-o",
+    "--output",
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Write the exported template to this file instead of stdout.",
+)
+def export_template(name: str, output: Path | None) -> None:
+    """Export a stored template."""
+    with closing(_ensure_connection()) as conn:
+        template = _fetch_template(conn, name)
+
+    if output is None:
+        click.echo(template["content"])
+        return
+
+    _write_content_to_file(output, template["content"], "template")
+    click.echo(f"Template '{name}' exported to '{output}'.")
+
+
+@kt.command(name="import")
+@click.argument("name")
+@click.option(
+    "-f",
+    "--file",
+    "file_path",
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    required=True,
+    help="Load the template content from this file.",
+)
+@click.option(
+    "--overwrite",
+    is_flag=True,
+    help="Replace the existing template if it already exists.",
+)
+def import_template(name: str, file_path: Path, overwrite: bool) -> None:
+    """Import a template from disk."""
+    content = _read_template_from_file(file_path)
+    if not content.strip():
+        raise click.ClickException("Template content cannot be empty.")
+
+    with closing(_ensure_connection()) as conn:
+        exists = _template_exists(conn, name)
+        if exists and not overwrite:
+            raise click.ClickException(
+                f"Template '{name}' already exists. Use --overwrite to replace it."
+            )
+        if exists:
+            conn.execute(
+                "UPDATE templates SET content = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ?",
+                [content, name],
+            )
+            click.echo(f"Template '{name}' overwritten from '{file_path}'.")
+        else:
+            conn.execute(
+                "INSERT INTO templates (name, content) VALUES (?, ?)",
+                [name, content],
+            )
+            click.echo(f"Template '{name}' imported from '{file_path}'.")
+
+
 @kt.command()
 @click.argument("name")
 @click.option(
@@ -877,6 +947,66 @@ def delete_recipe(name: str, yes: bool) -> None:
         conn.execute("DELETE FROM recipes WHERE name = ?", [name])
 
     click.echo(f"Recipe '{name}' deleted.")
+
+
+@recipe.command(name="export")
+@click.argument("name")
+@click.option(
+    "-o",
+    "--output",
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Write the exported recipe to this file instead of stdout.",
+)
+def export_recipe(name: str, output: Path | None) -> None:
+    with closing(_ensure_connection()) as conn:
+        recipe_data = _fetch_recipe(conn, name)
+
+    if output is None:
+        click.echo(recipe_data["content"])
+        return
+
+    _write_content_to_file(output, recipe_data["content"], "recipe")
+    click.echo(f"Recipe '{name}' exported to '{output}'.")
+
+
+@recipe.command(name="import")
+@click.argument("name")
+@click.option(
+    "-f",
+    "--file",
+    "file_path",
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    required=True,
+    help="Load the recipe definition from this file.",
+)
+@click.option(
+    "--overwrite",
+    is_flag=True,
+    help="Replace the existing recipe if it already exists.",
+)
+def import_recipe(name: str, file_path: Path, overwrite: bool) -> None:
+    content = _read_template_from_file(file_path)
+    if not content.strip():
+        raise click.ClickException("Recipe content cannot be empty.")
+
+    with closing(_ensure_connection()) as conn:
+        exists = _recipe_exists(conn, name)
+        if exists and not overwrite:
+            raise click.ClickException(
+                f"Recipe '{name}' already exists. Use --overwrite to replace it."
+            )
+        if exists:
+            conn.execute(
+                "UPDATE recipes SET content = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ?",
+                [content, name],
+            )
+            click.echo(f"Recipe '{name}' overwritten from '{file_path}'.")
+        else:
+            conn.execute(
+                "INSERT INTO recipes (name, content) VALUES (?, ?)",
+                [name, content],
+            )
+            click.echo(f"Recipe '{name}' imported from '{file_path}'.")
 
 
 @recipe.command(name="render")

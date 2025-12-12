@@ -8,6 +8,8 @@ A very simple templating tool using Jinja2 Syntax.
 - Edit template - `kt edit [name]`  
 - Delete template - `kt delete [name]`  
 - Render Template - `kt render [name] [--output path]`  
+- Import template from file - `kt import [name] --file [path] [--overwrite]`  
+- Export template - `kt export [name] [--output path]`  
 - List Templates - `kt list`
 
 ## Recipe Automation
@@ -15,8 +17,12 @@ A very simple templating tool using Jinja2 Syntax.
 - Add recipe - `kt recipe add [name]`
 - Edit recipe - `kt recipe edit [name]`
 - Delete recipe - `kt recipe delete [name]`
+- Import recipe from file - `kt recipe import [name] --file [path] [--overwrite]`
+- Export recipe - `kt recipe export [name] [--output path]`
 - Render recipe - `kt recipe render [name]`
 - List recipes - `kt recipe list`
+
+Use `--overwrite` with the import commands when you want to replace an existing template or recipe; exports write to stdout unless an output file is provided.
 
 ## Installation
 
