@@ -119,7 +119,7 @@ Hello John
 
 ### No Variable Template
 
-In the event that a template contains no variables requiring user input, the editor will be empty.  Just save and quit anyway, and the template will render.
+In the event that a template contains no variables requiring user input, the CLI skips the editor entirely and renders the template immediately.
 
 ## Recipe Automation
 
@@ -130,6 +130,7 @@ Recipes let you describe a sequence of template renders, shell commands, and int
 - `template` – render a stored template, optionally writing the result to an `output` path.  The familiar TOML editor still opens, but providing a `context` table pre-fills its values (reusing prompt answers via `$(var)` where needed) so you only have to tweak what’s missing.
 - `command` – run shell commands.  Provide either a string (executed through the shell), a list of strings (executed without a shell), or a list containing multiple command definitions to run sequentially.  Values like `$(var_name)` are replaced by previously captured prompt variables before execution, and every variable is also exported to the child process environment.
 - `prompt` – ask the user for input and stash it under `var`.  The stored value can be re-used by later actions with the `$(var)` syntax.
+- `gate` – optionally include a `gate = "Question?"` string on any action to ask whether it should run.  Answer `y` to proceed or `n` to skip that action.
 
 ### Example recipe
 
@@ -161,6 +162,7 @@ command = "echo 'Generated database env'"
 
 [[actions]]
 type = "command"
+gate = "Create Git repository?"
 command = [
   ["git", "init"],
   ["git", "add", "."],

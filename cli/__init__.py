@@ -323,7 +323,9 @@ def _substitute_command_blocks(content: str) -> str:
 def _prompt_context_for_template(
     template_content: str, preset: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    toml_seed = _build_toml_template(template_content, preset) or "# No variables detected\n"
+    toml_seed = _build_toml_template(template_content, preset)
+    if not toml_seed.strip():
+        return preset or {}
     context_source = click.edit(toml_seed, extension=".toml", editor=EDITOR)
     if context_source is None:
         raise click.ClickException("Editor closed without saving variables.")
@@ -460,11 +462,32 @@ def _load_recipe_actions(content: str) -> list[dict[str, Any]]:
     return normalized
 
 
+def _should_run_action(
+    action: dict[str, Any], variables: dict[str, str], index: int
+) -> bool:
+    gate_value = action.get("gate")
+    if gate_value is None:
+        return True
+    if not isinstance(gate_value, str) or not gate_value:
+        raise click.ClickException(
+            f"Action #{index} gate must be a non-empty string when provided."
+        )
+    prompt_text = _substitute_variables(gate_value, variables)
+    confirmed = click.confirm(
+        f"[{index}] {prompt_text}", default=True, show_default=True
+    )
+    if not confirmed:
+        click.echo(f"[{index}] Skipping action.")
+    return confirmed
+
+
 def _execute_recipe_actions(
     conn: duckdb.DuckDBPyConnection, actions: list[dict[str, Any]]
 ) -> None:
     variables: dict[str, str] = {}
     for index, action in enumerate(actions, start=1):
+        if not _should_run_action(action, variables, index):
+            continue
         action_type = action.get("type")
         if action_type == "template":
             _run_template_action(conn, action, variables, index)
