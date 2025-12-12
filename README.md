@@ -127,7 +127,7 @@ Recipes let you describe a sequence of template renders, shell commands, and int
 
 ### Actions
 
-- `template` – render a stored template, optionally writing the result to an `output` path.  When executed the familiar TOML editor opens so you can supply the template variables.
+- `template` – render a stored template, optionally writing the result to an `output` path.  The familiar TOML editor still opens, but providing a `context` table pre-fills its values (reusing prompt answers via `$(var)` where needed) so you only have to tweak what’s missing.
 - `command` – run shell commands.  Provide either a string (executed through the shell) or a list of strings (executed without a shell).  Values like `$(var_name)` are replaced by previously captured prompt variables before execution, and every variable is also exported to the child process environment.
 - `prompt` – ask the user for input and stash it under `var`.  The stored value can be re-used by later actions with the `$(var)` syntax.
 
@@ -135,22 +135,29 @@ Recipes let you describe a sequence of template renders, shell commands, and int
 
 ```toml
 [[actions]]
-type = "template"
-name = "svelte-env"
-output = ".env"
-
-[[actions]]
-type = "command"
-command = ["touch", "README.md"]
+type = "prompt"
+prompt = "Postgres User Name:"
+var = "pguser"
 
 [[actions]]
 type = "prompt"
-prompt = "What is your name?"
-var = "name"
+prompt = "Postgres Password:"
+var = "pgpass"
+
+[[actions]]
+type = "prompt"
+prompt = "Postgres Database Name:"
+var = "pgdb"
+
+[[actions]]
+type = "template"
+name = "db-env"
+output = ".env"
+context = { postgres.name = "$(pguser)", postgres.password = "$(pgpass)", postgres.db_name = "$(pgdb)" }
 
 [[actions]]
 type = "command"
-command = "echo \"NAME=$(name)\" >> .env"
+command = "echo 'Generated database env'"
 ```
 
-Save this to `kt recipe add my-recipe`, then run it with `kt recipe render my-recipe`.  Each action is executed sequentially, allowing you to automate common bootstrap tasks without dropping back to the shell between templates.
+When the template action sees a `context` table it preloads those values in the editor so you can review or extend them before rendering.  Any string value that matches a previously prompted variable is resolved automatically, and you can also embed `$(var)` anywhere in the string to interpolate values inline.  Save this recipe with `kt recipe add db-env` and run it via `kt recipe render db-env` to generate the `.env` file end-to-end.

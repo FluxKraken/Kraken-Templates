@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import MutableMapping
 from contextlib import closing
 from pathlib import Path
 import os
@@ -15,6 +16,7 @@ from jinja2.exceptions import TemplateError
 from jinja2.visitor import NodeVisitor
 import tomllib
 from tomlkit import aot, comment, document, dumps, table
+from tomlkit.items import AoT
 
 EDITOR = os.environ.get("KT_EDITOR")
 
@@ -204,7 +206,7 @@ class TemplateIntrospector(NodeVisitor):
         return None
 
 
-def _build_toml_template(source: str) -> str:
+def _build_toml_template(source: str, preset: dict[str, Any] | None = None) -> str:
     env = Environment()
     parsed = env.parse(source)
 
@@ -244,8 +246,38 @@ def _build_toml_template(source: str) -> str:
         entries.append(entry)
         doc[var] = entries
 
+    if preset:
+        _apply_preset_to_doc(doc, preset)
+
     rendered = dumps(doc).strip()
     return f"{rendered}\n" if rendered else ""
+
+
+def _apply_preset_to_doc(target: MutableMapping[str, Any], preset: dict[str, Any]) -> None:
+    for key, value in preset.items():
+        if isinstance(value, dict):
+            existing = target.get(key)
+            if isinstance(existing, MutableMapping):
+                _apply_preset_to_doc(existing, value)
+            else:
+                tbl = table()
+                _apply_preset_to_doc(tbl, value)
+                target[key] = tbl
+        elif isinstance(value, list):
+            existing = target.get(key)
+            if isinstance(existing, AoT):
+                existing.clear()
+                for entry in value:
+                    if isinstance(entry, dict):
+                        row = table()
+                        _apply_preset_to_doc(row, entry)
+                        existing.append(row)
+                    else:
+                        existing.append(entry)
+            else:
+                target[key] = value
+        else:
+            target[key] = value
 
 
 def _read_template_from_file(path: Path) -> str:
@@ -288,8 +320,10 @@ def _substitute_command_blocks(content: str) -> str:
     return COMMAND_PATTERN.sub(_run, content)
 
 
-def _prompt_context_for_template(template_content: str) -> dict[str, Any]:
-    toml_seed = _build_toml_template(template_content) or "# No variables detected\n"
+def _prompt_context_for_template(
+    template_content: str, preset: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    toml_seed = _build_toml_template(template_content, preset) or "# No variables detected\n"
     context_source = click.edit(toml_seed, extension=".toml", editor=EDITOR)
     if context_source is None:
         raise click.ClickException("Editor closed without saving variables.")
@@ -334,6 +368,19 @@ def _coerce_command_value(value: Any) -> list[str] | str:
     raise click.ClickException(
         "Command actions must provide 'command' as a string or list of strings."
     )
+
+
+def _resolve_context_values(value: Any, variables: dict[str, str]) -> Any:
+    if isinstance(value, str):
+        resolved = _substitute_variables(value, variables)
+        if resolved == value and value in variables:
+            return variables[value]
+        return resolved
+    if isinstance(value, list):
+        return [_resolve_context_values(item, variables) for item in value]
+    if isinstance(value, dict):
+        return {key: _resolve_context_values(val, variables) for key, val in value.items()}
+    return value
 
 
 def _load_recipe_actions(content: str) -> list[dict[str, Any]]:
@@ -392,7 +439,21 @@ def _run_template_action(
 
     template = _fetch_template(conn, template_name)
     click.echo(f"[{index}] Rendering template '{template_name}'.")
-    context_data = _prompt_context_for_template(template["content"])
+    preset_context: dict[str, Any] | None = None
+    context_override = action.get("context")
+    if context_override is not None:
+        if not isinstance(context_override, dict):
+            raise click.ClickException(
+                f"Template action #{index} expected 'context' to be a table."
+            )
+        resolved = _resolve_context_values(context_override, variables)
+        if isinstance(resolved, dict):
+            preset_context = resolved
+        else:
+            raise click.ClickException(
+                f"Template action #{index} context must resolve to a table."
+            )
+    context_data = _prompt_context_for_template(template["content"], preset_context)
     rendered = _render_template_content(template["content"], context_data)
 
     output_value = action.get("output")
