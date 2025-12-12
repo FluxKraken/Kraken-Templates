@@ -207,7 +207,9 @@ class TemplateIntrospector(NodeVisitor):
 
 
 def _build_toml_template(
-    source: str, preset: dict[str, Any] | None = None
+    source: str,
+    preset: dict[str, Any] | None = None,
+    prompt_comment: str | None = None,
 ) -> tuple[str, bool]:
     env = Environment()
     parsed = env.parse(source)
@@ -233,6 +235,10 @@ def _build_toml_template(
     doc = document()
     if has_promptable_variables:
         doc.add(comment("Update the values below and save to render the template."))
+        if prompt_comment:
+            doc.add(comment(""))
+            doc.add(comment(f"Comment: {prompt_comment}"))
+            doc.add(comment(""))
 
     for var in scalar_vars:
         doc[var] = ""
@@ -327,9 +333,13 @@ def _substitute_command_blocks(content: str) -> str:
 
 
 def _prompt_context_for_template(
-    template_content: str, preset: dict[str, Any] | None = None
+    template_content: str,
+    preset: dict[str, Any] | None = None,
+    prompt_comment: str | None = None,
 ) -> dict[str, Any]:
-    toml_seed, has_promptable = _build_toml_template(template_content, preset)
+    toml_seed, has_promptable = _build_toml_template(
+        template_content, preset, prompt_comment
+    )
     if not has_promptable:
         return dict(preset) if isinstance(preset, dict) else {}
     context_source = click.edit(toml_seed, extension=".toml", editor=EDITOR)
@@ -521,6 +531,13 @@ def _run_template_action(
     variables: dict[str, str],
     index: int,
 ) -> None:
+    action_comment = action.get("comment")
+    if action_comment is not None:
+        if not isinstance(action_comment, str) or not action_comment.strip():
+            raise click.ClickException(
+                f"Template action #{index} must set 'comment' as a non-empty string when provided."
+            )
+        action_comment = _substitute_variables(action_comment.strip(), variables)
     template_name = action.get("name")
     if not isinstance(template_name, str) or not template_name:
         raise click.ClickException(
@@ -543,7 +560,9 @@ def _run_template_action(
             raise click.ClickException(
                 f"Template action #{index} context must resolve to a table."
             )
-    context_data = _prompt_context_for_template(template["content"], preset_context)
+    context_data = _prompt_context_for_template(
+        template["content"], preset_context, action_comment
+    )
     rendered = _render_template_content(template["content"], context_data)
 
     output_value = action.get("output")

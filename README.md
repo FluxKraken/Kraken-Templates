@@ -127,7 +127,7 @@ Recipes let you describe a sequence of template renders, shell commands, and int
 
 ### Actions
 
-- `template` – render a stored template, optionally writing the result to an `output` path.  The familiar TOML editor still opens, but providing a `context` table pre-fills its values (reusing prompt answers via `$(var)` where needed) so you only have to tweak what’s missing.
+- `template` – render a stored template, optionally writing the result to an `output` path.  The familiar TOML editor still opens, but providing a `context` table pre-fills its values (reusing prompt answers via `$(var)` where needed) so you only have to tweak what’s missing.  Add an optional `comment = "Fill in the project title"` to show extra guidance under the TOML header while editing.
 - `command` – run shell commands.  Provide either a string (executed through the shell), a list of strings (executed without a shell), or a list containing multiple command definitions to run sequentially.  Values like `$(var_name)` are replaced by previously captured prompt variables before execution, and every variable is also exported to the child process environment.
 - `prompt` – ask the user for input and stash it under `var`.  The stored value can be re-used by later actions with the `$(var)` syntax.
 - `recipe` – run another stored recipe inline without spawning a new `kt` process (avoiding DuckDB locks).  The nested recipe shares the current variable context and accepts `$(var)` interpolation in its `name`.
