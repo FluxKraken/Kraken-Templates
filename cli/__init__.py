@@ -15,7 +15,7 @@ from jinja2 import Environment, StrictUndefined, meta, nodes
 from jinja2.exceptions import TemplateError
 from jinja2.visitor import NodeVisitor
 import tomllib
-from tomlkit import aot, comment, document, dumps, table
+from tomlkit import aot, document, dumps, table
 from tomlkit.items import AoT
 
 EDITOR = os.environ.get("KT_EDITOR")
@@ -229,16 +229,8 @@ def _build_toml_template(
         else:
             scalar_vars.append(name)
 
-    has_promptable_variables = bool(
-        scalar_vars or table_vars or inspector.list_fields
-    )
+    has_promptable_variables = bool(scalar_vars or table_vars or inspector.list_fields)
     doc = document()
-    if has_promptable_variables:
-        doc.add(comment("Update the values below and save to render the template."))
-        if prompt_comment:
-            doc.add(comment(""))
-            doc.add(comment(f"Comment: {prompt_comment}"))
-            doc.add(comment(""))
 
     for var in scalar_vars:
         doc[var] = ""
@@ -261,8 +253,19 @@ def _build_toml_template(
     if preset:
         _apply_preset_to_doc(doc, preset)
 
-    rendered = dumps(doc).strip()
-    return (f"{rendered}\n" if rendered else "", has_promptable_variables)
+    rendered_body = dumps(doc).strip()
+    if not has_promptable_variables:
+        return (f"{rendered_body}\n" if rendered_body else "", has_promptable_variables)
+
+    header_lines = ["# Update the values below and save to render the template."]
+    if prompt_comment:
+        header_lines.extend(["#", f"# Comment: {prompt_comment}", "#"])
+    header = "\n".join(header_lines)
+
+    if rendered_body:
+        return (f"{header}\n{rendered_body}\n", has_promptable_variables)
+
+    return (f"{header}\n", has_promptable_variables)
 
 
 def _apply_preset_to_doc(target: MutableMapping[str, Any], preset: dict[str, Any]) -> None:
