@@ -157,7 +157,11 @@ vars = [
 type = "template"
 name = "db-env"
 output = ".env"
-context = { postgres.user = "$(postgres.user)", postgres.password = "$(postgres.password)", postgres.db_name = "$(postgres.db_name)" }
+context = {
+  postgres.user = "$(postgres.user)",
+  postgres.password = "$(postgres.password)",
+  postgres.db_name = "$(postgres.db_name)"
+}
 
 [[actions]]
 type = "command"
@@ -187,7 +191,7 @@ name = "post-setup"
 
 Prompt actions that declare `vars` open a TOML editor so you can enter related values in one place; nested tables become dotted variables such as `$(postgres.user)` that can be reused across subsequent actions.
 
-When the template action sees a `context` table it preloads those values in the editor so you can review or extend them before rendering.  Any string value that matches a previously prompted variable is resolved automatically, and you can also embed `$(var)` anywhere in the string to interpolate values inline.  Save this recipe with `kt recipe add db-env` and run it via `kt recipe render db-env` to generate the `.env` file end-to-end; create a separate `post-setup` recipe if you want the gated nested step to run.  Stored gates behave like any other variable (`$(create_git)` will substitute `true`/`false`), and recipes skip `check_gate` actions automatically when the referenced gate was answered with `n`.
+When the template action sees a `context` table it preloads those values in the editor so you can review or extend them before rendering.  Inline context tables can span multiple lines for readability, and any string value that matches a previously prompted variable is resolved automatically—you can also embed `$(var)` anywhere in the string to interpolate values inline.  Save this recipe with `kt recipe add db-env` and run it via `kt recipe render db-env` to generate the `.env` file end-to-end; create a separate `post-setup` recipe if you want the gated nested step to run.  Stored gates behave like any other variable (`$(create_git)` will substitute `true`/`false`), and recipes skip `check_gate` actions automatically when the referenced gate was answered with `n`.
 
 Templates that contain no variables can be rendered in bulk without prompting:
 

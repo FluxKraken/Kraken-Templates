@@ -608,9 +608,134 @@ def _expand_dotted_context_keys(data: dict[str, Any]) -> dict[str, Any]:
     return expanded
 
 
+
+def _normalize_inline_table_whitespace(source: str) -> str:
+    """Allow inline tables to span multiple lines by collapsing newline characters."""
+    result: list[str] = []
+    inline_depth = 0
+    i = 0
+    length = len(source)
+    string_type: str | None = None
+    string_multiline = False
+    basic_escape = False
+    in_comment = False
+
+    def _close_string() -> None:
+        nonlocal string_type, string_multiline, basic_escape
+        string_type = None
+        string_multiline = False
+        basic_escape = False
+
+    while i < length:
+        if string_type is not None:
+            if string_type == "basic":
+                if string_multiline and source.startswith('"""', i):
+                    result.extend('"""')
+                    i += 3
+                    _close_string()
+                    continue
+                ch = source[i]
+                result.append(ch)
+                i += 1
+                if string_multiline:
+                    continue
+                if basic_escape:
+                    basic_escape = False
+                    continue
+                if ch == "\\":
+                    basic_escape = True
+                    continue
+                if ch == '"':
+                    _close_string()
+                continue
+            if string_type == "literal":
+                if string_multiline and source.startswith("'''", i):
+                    result.extend("'''")
+                    i += 3
+                    _close_string()
+                    continue
+                ch = source[i]
+                result.append(ch)
+                i += 1
+                if not string_multiline and ch == "'":
+                    _close_string()
+                continue
+
+        ch = source[i]
+        if in_comment:
+            result.append(ch)
+            i += 1
+            if ch == "\n":
+                in_comment = False
+            continue
+
+        if ch == "#":
+            in_comment = True
+            result.append(ch)
+            i += 1
+            continue
+
+        if ch == '"':
+            if source.startswith('"""', i):
+                string_type = "basic"
+                string_multiline = True
+                result.extend('"""')
+                i += 3
+            else:
+                string_type = "basic"
+                string_multiline = False
+                basic_escape = False
+                result.append(ch)
+                i += 1
+            continue
+
+        if ch == "'":
+            if source.startswith("'''", i):
+                string_type = "literal"
+                string_multiline = True
+                result.extend("'''")
+                i += 3
+            else:
+                string_type = "literal"
+                string_multiline = False
+                result.append(ch)
+                i += 1
+            continue
+
+        if ch == "{":
+            inline_depth += 1
+            result.append(ch)
+            i += 1
+            continue
+
+        if ch == "}":
+            if inline_depth:
+                inline_depth -= 1
+            result.append(ch)
+            i += 1
+            continue
+
+        if ch == "\r" and inline_depth > 0:
+            result.append(" ")
+            i += 1
+            if i < length and source[i] == "\n":
+                i += 1
+            continue
+
+        if ch == "\n" and inline_depth > 0:
+            result.append(" ")
+            i += 1
+            continue
+
+        result.append(ch)
+        i += 1
+
+    return "".join(result)
+
+
 def _load_recipe_actions(content: str) -> list[dict[str, Any]]:
     try:
-        parsed = tomllib.loads(content)
+        parsed = tomllib.loads(_normalize_inline_table_whitespace(content))
     except tomllib.TOMLDecodeError as exc:
         raise click.ClickException(f"Invalid recipe TOML: {exc}") from exc
 
