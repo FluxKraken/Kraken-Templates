@@ -135,7 +135,7 @@ Recipes let you describe a sequence of template renders, shell commands, and int
 
 - `template` – render a stored template, optionally writing the result to an `output` path.  The familiar TOML editor still opens, but providing a `context` table pre-fills its values (reusing prompt answers via `$(var)` where needed) so you only have to tweak what’s missing.  Add an optional `comment = "Fill in the project title"` to show extra guidance under the TOML header while editing.  Include `verify = false` when you want to trust the provided context and skip launching the editor entirely.
 - `command` – run shell commands.  Provide either a string (executed through the shell), a list of strings (executed without a shell), or a list containing multiple command definitions to run sequentially.  Values like `$(var_name)` are replaced by previously captured prompt variables before execution, and every variable is also exported to the child process environment.
-- `prompt` – ask the user for input and stash it under `var`.  The stored value can be re-used by later actions with the `$(var)` syntax.
+- `prompt` – capture input either one variable at a time with `var`/`prompt`, or open a TOML editor with a `vars = [...]` array to fill multiple related values at once.  Nested `vars` tables create dotted variables like `$(user.email)`, and the optional `prompt` string on the action or nested entries is rendered as a comment in the editor.
 - `recipe` – run another stored recipe inline without spawning a new `kt` process (avoiding DuckDB locks).  The nested recipe shares the current variable context and accepts `$(var)` interpolation in its `name`.
 - `gate` – optionally include a `gate = "Question?"` string on any action to ask whether it should run.  Answer `y` to proceed or `n` to skip that action.  Add `store_gate = "var_name"` to stash the answer for later reuse, and include `check_gate = "var_name"` on future actions to automatically skip them when the stored gate returned `n`.
 
@@ -144,24 +144,20 @@ Recipes let you describe a sequence of template renders, shell commands, and int
 ```toml
 [[actions]]
 type = "prompt"
-prompt = "Postgres User Name:"
-var = "pguser"
-
-[[actions]]
-type = "prompt"
-prompt = "Postgres Password:"
-var = "pgpass"
-
-[[actions]]
-type = "prompt"
-prompt = "Postgres Database Name:"
-var = "pgdb"
+prompt = "Database credentials"
+vars = [
+  { name = "postgres", prompt = "Postgres User", vars = [
+    { name = "user" },
+    { name = "password" },
+    { name = "db_name", prompt = "Database name" },
+  ]},
+]
 
 [[actions]]
 type = "template"
 name = "db-env"
 output = ".env"
-context = { postgres.name = "$(pguser)", postgres.password = "$(pgpass)", postgres.db_name = "$(pgdb)" }
+context = { postgres.user = "$(postgres.user)", postgres.password = "$(postgres.password)", postgres.db_name = "$(postgres.db_name)" }
 
 [[actions]]
 type = "command"
@@ -188,6 +184,8 @@ type = "recipe"
 gate = "Run shared post-steps?"
 name = "post-setup"
 ```
+
+Prompt actions that declare `vars` open a TOML editor so you can enter related values in one place; nested tables become dotted variables such as `$(postgres.user)` that can be reused across subsequent actions.
 
 When the template action sees a `context` table it preloads those values in the editor so you can review or extend them before rendering.  Any string value that matches a previously prompted variable is resolved automatically, and you can also embed `$(var)` anywhere in the string to interpolate values inline.  Save this recipe with `kt recipe add db-env` and run it via `kt recipe render db-env` to generate the `.env` file end-to-end; create a separate `post-setup` recipe if you want the gated nested step to run.  Stored gates behave like any other variable (`$(create_git)` will substitute `true`/`false`), and recipes skip `check_gate` actions automatically when the referenced gate was answered with `n`.
 

@@ -23,7 +23,9 @@ EDITOR = os.environ.get("KT_EDITOR")
 APP_NAME = "kt"
 DB_FILENAME = "templates.duckdb"
 COMMAND_PATTERN = re.compile(r"\{>(.+?)<\}", re.DOTALL)
-VARIABLE_PATTERN = re.compile(r"\$\((?P<name>[A-Za-z_][A-Za-z0-9_]*)\)")
+VARIABLE_PATTERN = re.compile(
+    r"\$\((?P<name>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\)"
+)
 
 CREATE_TEMPLATES_SQL = """
 CREATE TABLE IF NOT EXISTS templates (
@@ -343,6 +345,145 @@ def _substitute_command_blocks(content: str) -> str:
     return COMMAND_PATTERN.sub(_run, content)
 
 
+def _get_value_from_variables(name: str, variables: dict[str, Any]) -> Any:
+    if name in variables:
+        return variables[name]
+
+    parts = name.split(".")
+    current: Any = variables
+    for part in parts:
+        if isinstance(current, MutableMapping) and part in current:
+            current = current[part]
+        else:
+            raise KeyError(name)
+
+    return current
+
+
+def _flatten_context_keys(values: dict[str, Any], prefix: str | None = None) -> dict[str, Any]:
+    flattened: dict[str, Any] = {}
+    for key, value in values.items():
+        path = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, dict):
+            flattened.update(_flatten_context_keys(value, path))
+        else:
+            flattened[path] = value
+
+    return flattened
+
+
+def _build_prompt_variables_document(
+    variable_defs: list[Any], variables: dict[str, Any], action_comment: str | None, index: int
+) -> str:
+    if not variable_defs:
+        raise click.ClickException(
+            f"Prompt action #{index} vars must be a non-empty array when provided."
+        )
+
+    doc = document()
+    seen_names: set[str] = set()
+
+    def _existing_value(path: str) -> Any:
+        try:
+            return _get_value_from_variables(path, variables)
+        except KeyError:
+            return ""
+
+    for entry_index, entry in enumerate(variable_defs, start=1):
+        if not isinstance(entry, dict):
+            raise click.ClickException(
+                f"Prompt action #{index} vars entry #{entry_index} must be a table."
+            )
+
+        name = entry.get("name")
+        comment_text = entry.get("prompt")
+        nested = entry.get("vars")
+
+        if not isinstance(name, str) or not name.strip():
+            raise click.ClickException(
+                f"Prompt action #{index} vars entry #{entry_index} must include a non-empty 'name'."
+            )
+        name = name.strip()
+        if name in seen_names:
+            raise click.ClickException(
+                f"Prompt action #{index} vars entry '{name}' is defined multiple times."
+            )
+        seen_names.add(name)
+
+        if comment_text is not None:
+            if not isinstance(comment_text, str) or not comment_text.strip():
+                raise click.ClickException(
+                    f"Prompt action #{index} vars entry '{name}' must set 'prompt' as a non-empty string when provided."
+                )
+            comment_text = comment_text.strip()
+
+        if nested is None:
+            doc[name] = _existing_value(name)
+            if comment_text:
+                doc[name].comment(comment_text)
+            continue
+
+        if not isinstance(nested, list) or not nested:
+            raise click.ClickException(
+                f"Prompt action #{index} vars entry '{name}' must provide a non-empty 'vars' array when present."
+            )
+
+        tbl = table()
+        if comment_text:
+            tbl.comment(comment_text)
+
+        nested_seen: set[str] = set()
+        for nested_index, nested_entry in enumerate(nested, start=1):
+            if not isinstance(nested_entry, dict):
+                raise click.ClickException(
+                    f"Prompt action #{index} vars entry '{name}' nested var #{nested_index} must be a table."
+                )
+
+            nested_name = nested_entry.get("name")
+            nested_comment = nested_entry.get("prompt")
+
+            if not isinstance(nested_name, str) or not nested_name.strip():
+                raise click.ClickException(
+                    f"Prompt action #{index} vars entry '{name}' nested var #{nested_index} must include a non-empty 'name'."
+                )
+            nested_name = nested_name.strip()
+            if nested_name in nested_seen:
+                raise click.ClickException(
+                    f"Prompt action #{index} vars entry '{name}' cannot repeat nested var '{nested_name}'."
+                )
+            nested_seen.add(nested_name)
+
+            if nested_entry.get("vars") is not None:
+                raise click.ClickException(
+                    f"Prompt action #{index} vars entry '{name}' nested var '{nested_name}' cannot define its own vars."
+                )
+
+            if nested_comment is not None:
+                if not isinstance(nested_comment, str) or not nested_comment.strip():
+                    raise click.ClickException(
+                        f"Prompt action #{index} vars entry '{name}' nested var '{nested_name}' must set 'prompt' as a non-empty string when provided."
+                    )
+                nested_comment = nested_comment.strip()
+
+            value_path = f"{name}.{nested_name}"
+            tbl[nested_name] = _existing_value(value_path)
+            if nested_comment:
+                tbl[nested_name].comment(nested_comment)
+
+        doc[name] = tbl
+
+    rendered_body = dumps(doc).strip()
+    header_lines = ["# Update the values below and save to store prompt variables."]
+    if action_comment:
+        header_lines.extend(["#", f"# Comment: {action_comment}", "#"])
+    header = "\n".join(header_lines)
+
+    if rendered_body:
+        return f"{header}\n{rendered_body}\n"
+
+    return f"{header}\n"
+
+
 def _prompt_context_for_template(
     template_content: str,
     preset: dict[str, Any] | None = None,
@@ -373,14 +514,16 @@ def _render_template_content(template_content: str, context_data: dict[str, Any]
     return _substitute_command_blocks(rendered)
 
 
-def _substitute_variables(text: str, variables: dict[str, str]) -> str:
+def _substitute_variables(text: str, variables: dict[str, Any]) -> str:
     def _replace(match: re.Match[str]) -> str:
         name = match.group("name")
-        if name not in variables:
+        try:
+            value = _get_value_from_variables(name, variables)
+        except KeyError:
             raise click.ClickException(
                 f"Unknown variable '{name}' referenced in recipe action."
-            )
-        return str(variables[name])
+            ) from None
+        return str(value)
 
     return VARIABLE_PATTERN.sub(_replace, text)
 
@@ -417,11 +560,11 @@ def _coerce_command_value(value: Any) -> list[str | list[str]]:
     )
 
 
-def _resolve_context_values(value: Any, variables: dict[str, str]) -> Any:
+def _resolve_context_values(value: Any, variables: dict[str, Any]) -> Any:
     if isinstance(value, str):
         resolved = _substitute_variables(value, variables)
         if resolved == value and value in variables:
-            return variables[value]
+            return _get_value_from_variables(value, variables)
         return resolved
     if isinstance(value, list):
         return [_resolve_context_values(item, variables) for item in value]
@@ -507,7 +650,7 @@ def _coerce_gate_variable(
 
 
 def _should_run_action(
-    action: dict[str, Any], variables: dict[str, str], index: int
+    action: dict[str, Any], variables: dict[str, Any], index: int
 ) -> bool:
     check_gate_name = action.get("check_gate")
     if check_gate_name is not None:
@@ -515,12 +658,14 @@ def _should_run_action(
             raise click.ClickException(
                 f"Action #{index} check_gate must be a non-empty string when provided."
             )
-        if check_gate_name not in variables:
+        try:
+            gate_value = _get_value_from_variables(check_gate_name, variables)
+        except KeyError:
             raise click.ClickException(
                 f"Action #{index} check_gate references unknown gate '{check_gate_name}'."
-            )
+            ) from None
         check_passed = _coerce_gate_variable(
-            variables[check_gate_name],
+            gate_value,
             gate_name=check_gate_name,
             index=index,
             field_name="check_gate",
@@ -564,7 +709,7 @@ def _should_run_action(
 def _execute_recipe_actions(
     conn: duckdb.DuckDBPyConnection,
     actions: list[dict[str, Any]],
-    variables: dict[str, str] | None = None,
+    variables: dict[str, Any] | None = None,
     lineage: list[str] | None = None,
 ) -> None:
     if variables is None:
@@ -592,7 +737,7 @@ def _execute_recipe_actions(
 def _run_bulk_template_entries(
     conn: duckdb.DuckDBPyConnection,
     entries: Any,
-    variables: dict[str, str],
+    variables: dict[str, Any],
     index: int,
 ) -> None:
     if not isinstance(entries, list) or not entries:
@@ -660,7 +805,7 @@ def _run_bulk_template_entries(
 def _run_template_action(
     conn: duckdb.DuckDBPyConnection,
     action: dict[str, Any],
-    variables: dict[str, str],
+    variables: dict[str, Any],
     index: int,
 ) -> None:
     action_comment = action.get("comment")
@@ -745,7 +890,7 @@ def _run_template_action(
 def _run_recipe_action(
     conn: duckdb.DuckDBPyConnection,
     action: dict[str, Any],
-    variables: dict[str, str],
+    variables: dict[str, Any],
     lineage: list[str],
     index: int,
 ) -> None:
@@ -769,7 +914,7 @@ def _run_recipe_action(
     click.echo(f"[{index}] Completed recipe '{resolved_name}'.")
 
 
-def _run_command_action(action: dict[str, Any], variables: dict[str, str], index: int) -> None:
+def _run_command_action(action: dict[str, Any], variables: dict[str, Any], index: int) -> None:
     if "command" not in action:
         raise click.ClickException(
             f"Command action #{index} must define a 'command' field."
@@ -806,9 +951,39 @@ def _run_command_action(action: dict[str, Any], variables: dict[str, str], index
 
 
 def _run_prompt_action(
-    action: dict[str, Any], variables: dict[str, str], index: int
+    action: dict[str, Any], variables: dict[str, Any], index: int
 ) -> None:
     prompt_text = action.get("prompt")
+    variable_defs = action.get("vars")
+
+    if variable_defs is not None:
+        if not isinstance(variable_defs, list):
+            raise click.ClickException(
+                f"Prompt action #{index} expected 'vars' to be an array of tables."
+            )
+        if prompt_text is not None:
+            if not isinstance(prompt_text, str) or not prompt_text.strip():
+                raise click.ClickException(
+                    f"Prompt action #{index} must set 'prompt' as a non-empty string when provided."
+                )
+            prompt_text = prompt_text.strip()
+        toml_seed = _build_prompt_variables_document(
+            variable_defs, variables, prompt_text, index
+        )
+        context_source = click.edit(toml_seed, extension=".toml", editor=EDITOR)
+        if context_source is None:
+            raise click.ClickException("Editor closed without saving variables.")
+
+        try:
+            entered_values = tomllib.loads(context_source)
+        except tomllib.TOMLDecodeError as exc:
+            raise click.ClickException(f"Invalid TOML: {exc}") from exc
+
+        flattened = _flatten_context_keys(entered_values)
+        variables.update(flattened)
+        click.echo(f"[{index}] Stored {len(flattened)} variables.")
+        return
+
     var_name = action.get("var")
     if not isinstance(prompt_text, str) or not prompt_text:
         raise click.ClickException(
