@@ -879,6 +879,8 @@ def _run_bulk_template_entries(
         template_name = entry.get("name")
         output_value = entry.get("output")
         overwrite_value = entry.get("overwrite")
+        context_override = entry.get("context")
+        context_data: dict[str, Any] | None = None
 
         if not isinstance(template_name, str) or not template_name:
             raise click.ClickException(
@@ -897,14 +899,26 @@ def _run_bulk_template_entries(
                 f"Template action #{index} bulk entry #{entry_index} expected 'overwrite' to be a boolean when provided."
             )
 
+        if context_override is not None:
+            if not isinstance(context_override, dict):
+                raise click.ClickException(
+                    f"Template action #{index} bulk entry #{entry_index} expected 'context' to be a table."
+                )
+            resolved_context = _resolve_context_values(context_override, variables)
+            if not isinstance(resolved_context, dict):
+                raise click.ClickException(
+                    f"Template action #{index} bulk entry #{entry_index} context must resolve to a table."
+                )
+            context_data = _expand_dotted_context_keys(resolved_context)
+
         template = _fetch_template(conn, template_name)
         _, has_promptable = _build_toml_template(template["content"])
-        if has_promptable:
+        if has_promptable and context_data is None:
             raise click.ClickException(
                 f"Template action #{index} bulk entry '{template_name}' cannot be rendered without prompting because it defines variables."
             )
 
-        rendered = _render_template_content(template["content"], {})
+        rendered = _render_template_content(template["content"], context_data or {})
         resolved_output = _substitute_variables(output_value, variables)
         output_path = Path(resolved_output).expanduser()
         output_path.parent.mkdir(parents=True, exist_ok=True)

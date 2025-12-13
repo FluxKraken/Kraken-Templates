@@ -193,15 +193,28 @@ Prompt actions that declare `vars` open a TOML editor so you can enter related v
 
 When the template action sees a `context` table it preloads those values in the editor so you can review or extend them before rendering.  Inline context tables can span multiple lines for readability, and any string value that matches a previously prompted variable is resolved automatically—you can also embed `$(var)` anywhere in the string to interpolate values inline.  Save this recipe with `kt recipe add db-env` and run it via `kt recipe render db-env` to generate the `.env` file end-to-end; create a separate `post-setup` recipe if you want the gated nested step to run.  Stored gates behave like any other variable (`$(create_git)` will substitute `true`/`false`), and recipes skip `check_gate` actions automatically when the referenced gate was answered with `n`.
 
-Templates that contain no variables can be rendered in bulk without prompting:
+Templates can also be rendered in bulk without prompting.  Supply a `context`
+table for entries that need variables resolved inline:
 
 ```toml
 [[actions]]
 type = "template"
 bulk = [
-  { name = ".gitignore", output = ".gitignore", overwrite = true },
-  { name = "readme", output = "README.md", overwrite = true }
+  {
+    name = "readme",
+    output = "README.md",
+    overwrite = true,
+    context = {
+      project.title = "$(project.title)",
+      project.description = "$(project.description)"
+    }
+  },
+  { name = ".gitignore", output = ".gitignore", overwrite = true }
 ]
 ```
 
-Each `bulk` entry must reference a template without prompt variables.  Existing files are left untouched unless `overwrite = true` is set for that entry.
+Each `bulk` entry can define `context` the same way as the standard template
+action (inline tables may be split across multiple indented lines).  Entries
+that omit `context` must reference templates without prompt variables, and
+existing files are left untouched unless `overwrite = true` is set for that
+entry.
